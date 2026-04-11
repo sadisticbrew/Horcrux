@@ -1,4 +1,4 @@
-package main
+package shamir
 
 import (
 	"crypto/rand"
@@ -112,41 +112,4 @@ func (i *Integrater) Integrate() *big.Int {
 		result.Mod(result, i.Prime)
 	}
 	return result
-}
-
-func main() {
-	sharer := &ShamirSharer{
-		Threshold: 3,
-		Bits:      512,
-		Secret:    big.NewInt(int64(42)),
-	}
-
-	fmt.Println("Enter total number of shards to generate:")
-	var totalShards int
-	fmt.Scanf("%d", &totalShards)
-
-	var splitter SecretSplitter = sharer
-
-	shards, prime, err := splitter.Generate(totalShards)
-	fmt.Println(prime)
-	if err != nil {
-		panic(err)
-	}
-
-	fmt.Printf("\n--- Shards ---\n")
-	for key, value := range shards {
-		fmt.Printf("Shard %d: %v\n", key, value)
-	}
-	reduced_shards := shards
-	delete(reduced_shards, 1)
-	delete(reduced_shards, 3)
-
-	integrater := &Integrater{
-		Shards: reduced_shards,
-		Prime:  prime,
-	}
-	var integrate SecretIntegrater = integrater
-	integrated := integrate.Integrate()
-	fmt.Println("-----------------------------------------------")
-	fmt.Println(integrated)
 }
