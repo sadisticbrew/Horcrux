@@ -1,30 +1,35 @@
 # Horcrux
 
-A cryptographic secret sharing engine written in Go, built from scratch. 
+A cryptographic file encryption and secret sharing engine written in Go.
 
-Horcrux uses Shamir's Secret Sharing to split a secret (like a password or a cryptographic key) into multiple distinct shards. You can specify a "threshold"—the minimum number of shards required to piece the original secret back together. If an attacker gets fewer shards than the threshold, they learn absolutely nothing about the secret.
+Horcrux secures your files using AES-256-GCM envelope encryption, and then uses Shamir's Secret Sharing (SSS) to split the master encryption key into multiple distinct shards. You specify a "threshold"—the minimum number of shards required to rebuild the key and decrypt the file. If an attacker gets fewer shards than the threshold, they learn absolutely nothing about your key or your data.
 
 ## Current State
-The core mathematical engine is fully functional. It handles the finite field arithmetic, random prime generation, and Lagrange interpolation required to split and rebuild secrets safely.
+The core backend engine is fully functional and production-ready. It features a memory-safe chunking protocol capable of encrypting and decrypting massive files (like gigabyte-sized backups) without consuming excessive RAM. The SSS math engine and the encryption tools are cleanly separated into reusable Go packages.
 
 **Current Features:**
-* Custom Shamir's Secret Sharing implementation.
-* Dynamic threshold and shard generation.
-* Large integer math handling via Go's `math/big`.
+* Custom Shamir's Secret Sharing implementation built from scratch.
+* Secure envelope encryption using AES-256-GCM.
+* Memory-efficient file streaming (chunking protocol) for large files.
+* Modular Go package architecture (`pkg/shamir` and `pkg/crypto`).
 
 **Planned Features:**
-* [ ] Full Command Line Interface (CLI) using Cobra.
-* [ ] Envelope encryption using AES-256-GCM.
-* [ ] Support for file-based sharding using `io.Reader` and `io.Writer`.
+* [ ] Full Command Line Interface (CLI) using the Cobra framework.
+* [ ] OS Keyring integration for secure, persistent local key storage.
 
 ## How to Run
 
-Right now, the project contains a demonstration of the core engine in `main.go`. 
+Right now, the project contains a demonstration of the full encryption, sharding, and decryption lifecycle in `main.go`. 
 
 1. Ensure you have Go installed.
 2. Clone the repository:
    ```bash
-   git clone [https://github.com/yourusername/horcrux.git](https://github.com/yourusername/horcrux.git)
+   git clone [https://github.com/prathampatel/horcrux.git](https://github.com/prathampatel/horcrux.git)
    cd horcrux
-   go run main.go
-   ```
+    ```
+3. Set your filepath in cmd/horcrux/main.go file
+4. Run the engine:
+   ```bash
+   go run cmd/horcrux/main.go
+    ```
+5. The program will generate a secure key, encrypt a target file, shatter the key into your specified number of shards, and then demonstrate successfully rebuilding the key to decrypt the file.
