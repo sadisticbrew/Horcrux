@@ -5,7 +5,6 @@ import (
 	"crypto/aes"
 	"crypto/cipher"
 	"crypto/rand"
-	"crypto/sha256"
 	"fmt"
 	"io"
 	"math/big"
@@ -38,12 +37,11 @@ func (s *Streamer) init() error {
 }
 
 func (s *Streamer) GetKey() *big.Int {
-	fmt.Println(s.key)
+	fmt.Println("original key: ", s.key)
 	return new(big.Int).SetBytes(s.key)
 }
 func (s *Streamer) ClearKey() {
 	s.key = nil
-	fmt.Println(s.key)
 }
 func (s *Streamer) SetKey(key []byte) {
 	s.key = key
@@ -119,12 +117,6 @@ func NewStreamer(filepath string) *Streamer {
 		check(s.init())
 	}
 	return s
-}
-
-func createHash(key string) []byte {
-	hasher := sha256.New()
-	hasher.Write([]byte(key))
-	return []byte(hasher.Sum(nil))
 }
 
 func encrypt(data []byte, gcm cipher.AEAD) []byte {
