@@ -29,7 +29,7 @@ var encryptCmd = &cobra.Command{
 		}
 		fmt.Println("Encrytion called on file", args[0])
 		lock(args)
-		fmt.Printf("Success: %d Shards generated.\n\nWARNING: Move these shards to separate, secure locations (USB drives, password managers) and delete the local copies.", shardsNo)
+		fmt.Printf("\nSuccess: %d Shards generated.\n\nWARNING: Move these shards to separate, secure locations (USB drives, password managers) and delete the local copies.", shardsNo)
 		return nil
 	},
 }
@@ -40,41 +40,56 @@ func init() {
 	encryptCmd.Flags().IntVarP(&threshold, "threshold", "t", 3, "Threshold number of shards required to unlock")
 }
 
-func lock(args []string) {
+func lock(args []string) error {
 	s := envelope.NewHorcruxStream(args[0])
-	s.InitializeKey()
-	var sec envelope.CipherStream = s
-	err := sec.Encrypt()
+	err := s.InitializeKey()
 	if err != nil {
-		fmt.Println(err)
+		return err
 	}
+	var sec envelope.CipherStream = s
+
+	err = sec.Encrypt()
+	if err != nil {
+		return err
+	}
+
 	var sharer shamir.SecretSplitter = shamir.NewShamirSharer(threshold, 512, s.GetKey())
 	shards, prime, err := sharer.Generate(shardsNo)
-	generateShardFiles(shards, prime, args)
 	if err != nil {
-		fmt.Println(err)
+		return err
+	}
+	err = generateShardFiles(shards, prime, args)
+	if err != nil {
+		return err
 	}
 
 	fmt.Println("Shards:", shards, "Prime:", prime)
 
 	s.ClearKey()
+	return nil
 }
 
-func generateShardFiles(shards map[int]string, prime string, args []string) {
+func generateShardFiles(shards map[int]string, prime string, args []string) error {
 
 	for k, v := range shards {
 
-		f, _ := os.Create(args[0] + ".shard" + strconv.Itoa(k))
-
-		shard := shard{Prime: prime, X: k, Y: v}
-		data, _ := json.Marshal(shard)
-
-		_, err := f.Write(data)
+		f, err := os.Create(args[0] + ".shard" + strconv.Itoa(k))
 		if err != nil {
-			panic(err)
+			return err
+		}
+		shard := shard{Prime: prime, X: k, Y: v}
+		data, err := json.Marshal(shard)
+		if err != nil {
+			return err
+		}
+
+		_, err = f.Write(data)
+		if err != nil {
+			return err
 		}
 
 		f.Close()
 
 	}
+	return nil
 }

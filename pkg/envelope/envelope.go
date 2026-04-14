@@ -14,18 +14,12 @@ import (
 
 type CipherStream interface {
 	Encrypt() error
-	Decrypt()
+	Decrypt() error
 }
 
 type HorcruxStream struct {
 	Filepath string
 	key      []byte
-}
-
-func check(e error) {
-	if e != nil {
-		panic(e)
-	}
 }
 
 func (s *HorcruxStream) init() error {
@@ -46,39 +40,52 @@ func (s *HorcruxStream) ClearKey() {
 func (s *HorcruxStream) SetKey(key []byte) {
 	s.key = key
 }
-func (s *HorcruxStream) InitializeKey() {
+func (s *HorcruxStream) InitializeKey() error {
 	s.key = make([]byte, 32)
 	_, err := rand.Read(s.key)
-	check(err)
+	if err != nil {
+		return err
+	}
+	return nil
 }
 
 func (s *HorcruxStream) Encrypt() error {
 
-	f, _ := os.Open(s.Filepath)
+	f, err := os.Open(s.Filepath)
+	if err != nil {
+		return err
+	}
 	defer f.Close()
-	r, _ := os.Create(s.Filepath + ".enc")
+	r, err := os.Create(s.Filepath + ".enc")
+	if err != nil {
+		return err
+	}
 	defer r.Close()
 
 	block, err := aes.NewCipher(s.key)
-	check(err)
+	if err != nil {
+		return err
+	}
+
 	gcm, err := cipher.NewGCM(block)
-	check(err)
+	if err != nil {
+		return err
+	}
 
 	reader := bufio.NewReader(f)
 	buff := make([]byte, 4096)
 
 	baseNonce := make([]byte, gcm.NonceSize())
 	_, err = io.ReadFull(rand.Reader, baseNonce)
-	check(err)
+	if err != nil {
+		return err
+	}
 	r.Write(baseNonce)
 
 	count := 0
 
 	for {
 		n, err := io.ReadFull(reader, buff)
-		if n < len(buff) {
-			fmt.Println("read bytes less than the buff", n)
-		}
 		if err == io.EOF {
 			break
 		}
@@ -88,28 +95,42 @@ func (s *HorcruxStream) Encrypt() error {
 			r.Write(encrypt(buff[:n], nonce, gcm))
 			break
 		}
-		check(err)
+		if err != nil {
+			return err
+		}
 
 		nonce := makeCombinedNonce(count, baseNonce, gcm)
 		count++
 
-		r.Write(encrypt(buff[:n], nonce, gcm))
+		_, err = r.Write(encrypt(buff[:n], nonce, gcm))
+		if err != nil {
+			return err
+		}
 	}
 
 	return nil
 }
-func (s *HorcruxStream) Decrypt() {
+func (s *HorcruxStream) Decrypt() error {
 	f, err := os.Open(s.Filepath + ".enc")
-	check(err)
+	if err != nil {
+		return err
+	}
 	defer f.Close()
+
 	r, err := os.Create(s.Filepath + ".dec")
-	check(err)
+	if err != nil {
+		return err
+	}
 	defer r.Close()
 
 	block, err := aes.NewCipher(s.key)
-	check(err)
+	if err != nil {
+		return err
+	}
 	gcm, err := cipher.NewGCM(block)
-	check(err)
+	if err != nil {
+		return err
+	}
 
 	nonceSize := gcm.NonceSize()
 	targetReadSize := 4096 + gcm.Overhead()
@@ -119,7 +140,9 @@ func (s *HorcruxStream) Decrypt() {
 
 	baseNonce := make([]byte, nonceSize)
 	_, err = io.ReadFull(reader, baseNonce)
-	check(err)
+	if err != nil {
+		return err
+	}
 
 	count := 0
 
@@ -132,16 +155,31 @@ func (s *HorcruxStream) Decrypt() {
 		if err == io.ErrUnexpectedEOF {
 			nonce := makeCombinedNonce(count, baseNonce, gcm)
 			count++
-			r.Write(decrypt(buff[:n], nonce, gcm))
+			data, err := decrypt(buff[:n], nonce, gcm)
+			if err != nil {
+				return err
+			}
+			r.Write(data)
 			break
 		}
-		check(err)
+		if err != nil {
+			return err
+		}
 
 		nonce := makeCombinedNonce(count, baseNonce, gcm)
 		count++
 
-		r.Write(decrypt(buff[:n], nonce, gcm))
+		data, err := decrypt(buff[:n], nonce, gcm)
+		if err != nil {
+			return err
+		}
+
+		_, err = r.Write(data)
+		if err != nil {
+			return err
+		}
 	}
+	return nil
 }
 
 func NewHorcruxStream(filepath string) *HorcruxStream {
@@ -167,15 +205,10 @@ func encrypt(data, nonce []byte, gcm cipher.AEAD) []byte {
 	return gcm.Seal(nil, nonce, data, nil)
 }
 
-func decrypt(data, nonce []byte, gcm cipher.AEAD) []byte {
-	// nonce, ciphertext := data[:nonceSize], data[nonceSize:]
+func decrypt(data, nonce []byte, gcm cipher.AEAD) ([]byte, error) {
 	out, err := gcm.Open(nil, nonce, data, nil)
-	check(err)
-	return out
-}
-
-func main() {
-	s := NewHorcruxStream("/home/caffeine/Documents/projects_backup.zip")
-	s.Encrypt()
-	s.Decrypt()
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
 }

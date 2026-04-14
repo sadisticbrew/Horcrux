@@ -37,7 +37,10 @@ var decryptCmd = &cobra.Command{
 			return fmt.Errorf("No shard files provided!")
 		}
 		fp := strings.TrimSuffix(args[0], ".enc")
-		unlock(fp)
+		err := unlock(fp)
+		if err != nil {
+			return err
+		}
 		return nil
 		// readShardFiles(shards)
 	},
@@ -48,10 +51,16 @@ func init() {
 	decryptCmd.Flags().StringSliceVarP(&shards, "shards", "s", []string{}, "Shard files")
 }
 
-func unlock(fp string) {
-	readShards := readShardFiles(shards)
+func unlock(fp string) error {
+	readShards, err := readShardFiles(shards)
+	if err != nil {
+		return err
+	}
 
-	shardMap, masterPrime := parseToMap(readShards)
+	shardMap, masterPrime, err := parseToMap(readShards)
+	if err != nil {
+		return err
+	}
 
 	i := shamir.NewIntegrater(shardMap, masterPrime)
 	var integrater shamir.SecretIntegrater = i
@@ -62,62 +71,80 @@ func unlock(fp string) {
 	s.SetKey(key.FillBytes(buff))
 	var sec envelope.CipherStream = s
 
-	sec.Decrypt()
+	err = sec.Decrypt()
+	if err != nil {
+		return err
+	}
+	return nil
 
 }
 
-func parseToMap(shards []DecodedShard) (map[int]*big.Int, *big.Int) {
+func parseToMap(shards []DecodedShard) (map[int]*big.Int, *big.Int, error) {
 	masterPrime := shards[0].Prime
 	shardMap := make(map[int]*big.Int)
 
 	for _, shard := range shards {
 		if masterPrime.Cmp(shard.Prime) != 0 {
-			panic("Master prime mismatch in the shards!")
+			return nil, nil, fmt.Errorf("Master prime mismatch in the shards!")
 		}
 		shardMap[shard.X] = shard.Y
 	}
 
-	return shardMap, masterPrime
+	return shardMap, masterPrime, nil
 }
 
-func readShardFiles(shards []string) []DecodedShard {
+func readShardFiles(shards []string) ([]DecodedShard, error) {
 	var result []DecodedShard
 	for _, s := range shards {
 		f, err := os.Open(s)
 		if err != nil {
-			fmt.Println("Error occoured while opening shard file: ", s)
+			return nil, fmt.Errorf("Error occoured while opening shard file: %v", err)
 		}
 		var shard Shard
 
 		byteJsonValue, err := io.ReadAll(f)
 		if err != nil {
-			fmt.Println("Error occoured while reading shard file: ", s)
+			f.Close()
+
+			return nil, fmt.Errorf("Error while reading a shard: %v", err)
 		}
 
 		err = json.Unmarshal(byteJsonValue, &shard)
-		result = append(result, decodeShard(shard))
+		if err != nil {
+			f.Close()
+
+			return nil, err
+		}
+
+		decodedShard, err := decodeShard(shard)
+		if err != nil {
+			f.Close()
+			return nil, err
+		}
+
+		result = append(result, decodedShard)
 		f.Close()
 	}
-	return result
+	return result, nil
 }
 
-func decodeShard(shard Shard) DecodedShard {
-	var err error
+func decodeShard(shard Shard) (DecodedShard, error) {
 	var newShard DecodedShard
 
 	byteBigIntPrime, err := base64.StdEncoding.DecodeString(shard.Prime)
-	newShard.Prime = new(big.Int).SetBytes(byteBigIntPrime)
 	if err != nil {
-		fmt.Println("Error occoured while decoding shard prime: ", err)
+		return DecodedShard{}, err
 	}
+
+	newShard.Prime = new(big.Int).SetBytes(byteBigIntPrime)
 
 	newShard.X = shard.X
 
 	byteBigIntY, err := base64.StdEncoding.DecodeString(shard.Y)
-	newShard.Y = new(big.Int).SetBytes(byteBigIntY)
 	if err != nil {
-		fmt.Println("Error occoured while decoding shard Y: ", err)
+		return DecodedShard{}, err
 	}
+	newShard.Y = new(big.Int).SetBytes(byteBigIntY)
 
-	return newShard
+	return newShard, nil
 }
