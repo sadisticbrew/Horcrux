@@ -2,6 +2,7 @@ package shamir
 
 import (
 	"crypto/rand"
+	"encoding/base64"
 	"fmt"
 	"math/big"
 )
@@ -13,7 +14,7 @@ func check(e error) {
 }
 
 type SecretSplitter interface {
-	Generate(totalShards int) (map[int]*big.Int, *big.Int, error)
+	Generate(totalShards int) (map[int]string, string, error)
 }
 type SecretIntegrater interface {
 	Integrate() *big.Int
@@ -29,6 +30,21 @@ type ShamirSharer struct {
 type Integrater struct {
 	Shards map[int]*big.Int
 	Prime  *big.Int
+}
+
+func NewShamirSharer(threshold, bits int, secret *big.Int) *ShamirSharer {
+	return &ShamirSharer{
+		Threshold: threshold,
+		Bits:      bits,
+		Secret:    secret,
+	}
+}
+
+func NewIntegrater(shards map[int]*big.Int, prime *big.Int) *Integrater {
+	return &Integrater{
+		Shards: shards,
+		Prime:  prime,
+	}
 }
 
 func (s *ShamirSharer) init() error {
@@ -60,10 +76,10 @@ func (s *ShamirSharer) eval(x int64) *big.Int {
 	return result
 }
 
-func (s *ShamirSharer) Generate(totalShards int) (map[int]*big.Int, *big.Int, error) {
+func (s *ShamirSharer) Generate(totalShards int) (map[int]string, string, error) {
 	if len(s.coeffs) == 0 {
 		if err := s.init(); err != nil {
-			return nil, nil, err
+			return nil, "", err
 		}
 	}
 
@@ -71,7 +87,8 @@ func (s *ShamirSharer) Generate(totalShards int) (map[int]*big.Int, *big.Int, er
 	for x := 1; x <= totalShards; x++ {
 		shards[x] = s.eval(int64(x))
 	}
-	return shards, s.Prime, nil
+	base64Prime := base64.StdEncoding.EncodeToString(s.Prime.Bytes())
+	return encodeShards(shards), base64Prime, nil
 }
 
 func (i *Integrater) calcWeights() map[int]*big.Int {
@@ -112,4 +129,12 @@ func (i *Integrater) Integrate() *big.Int {
 		result.Mod(result, i.Prime)
 	}
 	return result
+}
+
+func encodeShards(shards map[int]*big.Int) map[int]string {
+	newShards := make(map[int]string)
+	for k, v := range shards {
+		newShards[k] = base64.StdEncoding.EncodeToString(v.Bytes())
+	}
+	return newShards
 }
