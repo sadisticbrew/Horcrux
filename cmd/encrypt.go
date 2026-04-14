@@ -11,7 +11,7 @@ import (
 	"github.com/spf13/cobra"
 )
 
-var shardsNo, threshold int
+var shardsNo, threshold, chunkSize int
 
 type shard struct {
 	Prime string
@@ -36,6 +36,7 @@ var encryptCmd = &cobra.Command{
 
 func init() {
 	rootCmd.AddCommand(encryptCmd)
+	encryptCmd.Flags().IntVarP(&chunkSize, "chunk-size", "c", 4096, "Chunk size for encryption")
 	encryptCmd.Flags().IntVarP(&shardsNo, "shards", "s", 5, "Number of shards to create")
 	encryptCmd.Flags().IntVarP(&threshold, "threshold", "t", 3, "Threshold number of shards required to unlock")
 }
@@ -48,7 +49,7 @@ func lock(args []string) error {
 	}
 	var sec envelope.CipherStream = s
 
-	err = sec.Encrypt()
+	err = sec.Encrypt(chunkSize)
 	if err != nil {
 		return err
 	}

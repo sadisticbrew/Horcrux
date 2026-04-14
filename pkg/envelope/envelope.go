@@ -2,18 +2,26 @@ package envelope
 
 import (
 	"bufio"
+	"bytes"
 	"crypto/aes"
 	"crypto/cipher"
 	"crypto/rand"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"io"
 	"math/big"
 	"os"
+	"path/filepath"
+)
+
+const (
+	signature string = "HRX1"
+	version   int    = 1
 )
 
 type CipherStream interface {
-	Encrypt() error
+	Encrypt(int) error
 	Decrypt() error
 }
 
@@ -49,12 +57,17 @@ func (s *HorcruxStream) InitializeKey() error {
 	return nil
 }
 
-func (s *HorcruxStream) Encrypt() error {
+func (s *HorcruxStream) Encrypt(chunkSize int) error {
+
+	if chunkSize < 128 {
+		return fmt.Errorf("chunk size must be at least 128 bytes")
+	}
 
 	f, err := os.Open(s.Filepath)
 	if err != nil {
 		return err
 	}
+	baseFilename := filepath.Base(s.Filepath)
 	defer f.Close()
 	r, err := os.Create(s.Filepath + ".enc")
 	if err != nil {
@@ -73,14 +86,38 @@ func (s *HorcruxStream) Encrypt() error {
 	}
 
 	reader := bufio.NewReader(f)
-	buff := make([]byte, 4096)
 
 	baseNonce := make([]byte, gcm.NonceSize())
 	_, err = io.ReadFull(rand.Reader, baseNonce)
 	if err != nil {
 		return err
 	}
+
+	// Metadata section:
+	// Fixed 21 byte metadata written to start of every encrypted file:
+	// bytes 0-3: Unique signature `HRX1`
+	// byte 4: the version
+	// byte 5-8: Chunksize converted to uint32
+	// 9-20 : The baseNonce
+	//
+	// The variable part:
+	// byte 21-22: the original file name length (N)
+	// byte 23-N: original file name converted to raw bytes
+	r.Write([]byte(signature))
+	r.Write([]byte{byte(1)})
+
+	chunkSizeSlice := binary.BigEndian.AppendUint32(nil, uint32(chunkSize))
+	r.Write(chunkSizeSlice)
+
+	fmt.Println("Writing chunksize: ", chunkSize, chunkSizeSlice)
 	r.Write(baseNonce)
+
+	originalFilenameLenSlice := binary.BigEndian.AppendUint16(nil, uint16(len(baseFilename)))
+	r.Write(originalFilenameLenSlice)
+	fmt.Println("Writing org filename len: ", len(baseFilename), originalFilenameLenSlice)
+	r.Write([]byte(baseFilename))
+
+	buff := make([]byte, chunkSize)
 
 	count := 0
 
@@ -117,12 +154,6 @@ func (s *HorcruxStream) Decrypt() error {
 	}
 	defer f.Close()
 
-	r, err := os.Create(s.Filepath + ".dec")
-	if err != nil {
-		return err
-	}
-	defer r.Close()
-
 	block, err := aes.NewCipher(s.key)
 	if err != nil {
 		return err
@@ -132,8 +163,40 @@ func (s *HorcruxStream) Decrypt() error {
 		return err
 	}
 
+	// Reading the metadata
+	signatureBuff := make([]byte, 4)
+	n, err := io.ReadFull(f, signatureBuff)
+	if err != nil {
+		return err
+	}
+	if n < 4 || !bytes.Equal(signatureBuff, []byte(signature)) {
+		return errors.New("Invalid signature!\n")
+	}
+	fmt.Println("Read signature", string(signatureBuff))
+
+	versionBuff := make([]byte, 1)
+	n, err = io.ReadFull(f, versionBuff)
+	if err != nil {
+		return err
+	}
+	if n < 1 || !bytes.Equal(versionBuff, []byte{byte(version)}) {
+		return errors.New("Invalid version!\n")
+	}
+	fmt.Println("Read version", versionBuff)
+
+	chunkSize := make([]byte, 4)
+	n, err = io.ReadFull(f, chunkSize)
+	if err != nil {
+		return err
+	}
+	if n < 4 {
+		return errors.New("Invalid chunk size!\n")
+	}
+	chunkSizeInt := int(binary.BigEndian.Uint32(chunkSize))
+	fmt.Println("Read chunksize: ", chunkSizeInt, chunkSize)
+
 	nonceSize := gcm.NonceSize()
-	targetReadSize := 4096 + gcm.Overhead()
+	targetReadSize := chunkSizeInt + gcm.Overhead()
 	reader := bufio.NewReaderSize(f, targetReadSize)
 
 	buff := make([]byte, targetReadSize)
@@ -143,10 +206,41 @@ func (s *HorcruxStream) Decrypt() error {
 	if err != nil {
 		return err
 	}
+	fmt.Println("Read baseNonce ")
+
+	originalFilenameLen := make([]byte, 2)
+	n, err = io.ReadFull(reader, originalFilenameLen)
+	if err != nil {
+		return err
+	}
+	if n < 2 {
+		return errors.New("Invalid original filename length!\n")
+	}
+
+	originalFilenameLenInt := int(binary.BigEndian.Uint16(originalFilenameLen))
+	fmt.Println("Read org filename length", originalFilenameLenInt)
+	originalFilename := make([]byte, originalFilenameLenInt)
+	n, err = io.ReadFull(reader, originalFilename)
+	if err != nil {
+		return err
+	}
+	if n < originalFilenameLenInt {
+		return errors.New("Invalid original filename!\n")
+	}
+	fmt.Println(string(originalFilename))
+
+	dir := filepath.Dir(s.Filepath)
+	fmt.Println("Writing to: ", filepath.Join(dir, string(originalFilename)))
+	r, err := os.Create(filepath.Join(dir, string(originalFilename)))
+	if err != nil {
+		return err
+	}
+	defer r.Close()
 
 	count := 0
 
 	for {
+		// fmt.Println("I reached the for loop")
 		n, err := io.ReadFull(reader, buff)
 
 		if err == io.EOF {
