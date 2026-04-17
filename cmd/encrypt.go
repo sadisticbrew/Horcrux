@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"crypto/rand"
 	"encoding/json"
 	"fmt"
 	"horcrux/pkg/envelope"
@@ -43,16 +44,11 @@ func init() {
 
 func lock(args []string) error {
 	s := envelope.NewHorcruxStream(args[0])
-	err := s.InitializeKey()
+	kek, err := generateKEK()
 	if err != nil {
 		return err
 	}
-	var sec envelope.CipherStream = s
-
-	err = sec.Encrypt(chunkSize)
-	if err != nil {
-		return err
-	}
+	s.SetKey(kek)
 
 	var sharer shamir.SecretSplitter = shamir.NewShamirSharer(threshold, 512, s.GetKey())
 	shards, prime, err := sharer.Generate(shardsNo)
@@ -64,7 +60,13 @@ func lock(args []string) error {
 		return err
 	}
 
-	fmt.Println("Shards:", shards, "Prime:", prime)
+	s.InitializeKey()
+
+	var cipherStream envelope.CipherStream = s
+	err = cipherStream.Encrypt()
+	if err != nil {
+		return err
+	}
 
 	s.ClearKey()
 	return nil
@@ -93,4 +95,13 @@ func generateShardFiles(shards map[int]string, prime string, args []string) erro
 
 	}
 	return nil
+}
+
+func generateKEK() ([]byte, error) {
+	kek := make([]byte, 32)
+	_, err := rand.Read(kek)
+	if err != nil {
+		return nil, err
+	}
+	return kek, nil
 }

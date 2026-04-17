@@ -1,7 +1,6 @@
 package envelope
 
 import (
-	"bufio"
 	"bytes"
 	"crypto/aes"
 	"crypto/cipher"
@@ -13,21 +12,27 @@ import (
 	"math/big"
 	"os"
 	"path/filepath"
+
+	"github.com/google/tink/go/insecurecleartextkeyset"
+	"github.com/google/tink/go/keyset"
+	"github.com/google/tink/go/streamingaead"
 )
 
 const (
-	signature string = "HRX1"
-	version   int    = 1
+	signature string = "HRX2"
+	version   int    = 2
 )
 
 type CipherStream interface {
-	Encrypt(int) error
+	Encrypt() error
 	Decrypt() error
 }
 
 type HorcruxStream struct {
-	Filepath string
-	key      []byte
+	Filepath        string
+	key             []byte
+	encryptedKeyset []byte
+	tinkHandle      *keyset.Handle
 }
 
 func (s *HorcruxStream) init() error {
@@ -44,109 +49,109 @@ func (s *HorcruxStream) GetKey() *big.Int {
 }
 func (s *HorcruxStream) ClearKey() {
 	s.key = nil
+	s.tinkHandle = nil
 }
 func (s *HorcruxStream) SetKey(key []byte) {
 	s.key = key
 }
 func (s *HorcruxStream) InitializeKey() error {
-	s.key = make([]byte, 32)
-	_, err := rand.Read(s.key)
+	dek, err := keyset.NewHandle(streamingaead.AES256GCMHKDF1MBKeyTemplate())
 	if err != nil {
 		return err
 	}
+	s.tinkHandle = dek
+
+	buf := new(bytes.Buffer)
+	writer := keyset.NewJSONWriter(buf)
+	err = insecurecleartextkeyset.Write(dek, writer)
+	if err != nil {
+		return err
+	}
+	encryptedKey, err := s.encryptKey(buf)
+	if err != nil {
+		return err
+	}
+	s.encryptedKeyset = encryptedKey
 	return nil
+
 }
 
-func (s *HorcruxStream) Encrypt(chunkSize int) error {
-
-	if chunkSize < 128 {
-		return fmt.Errorf("chunk size must be at least 128 bytes")
-	}
-
-	f, err := os.Open(s.Filepath)
-	if err != nil {
-		return err
-	}
-	baseFilename := filepath.Base(s.Filepath)
-	defer f.Close()
-	r, err := os.Create(s.Filepath + ".enc")
-	if err != nil {
-		return err
-	}
-	defer r.Close()
-
+func (s *HorcruxStream) encryptKey(dek *bytes.Buffer) ([]byte, error) {
 	block, err := aes.NewCipher(s.key)
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	gcm, err := cipher.NewGCM(block)
 	if err != nil {
-		return err
+		return nil, err
 	}
 
-	reader := bufio.NewReader(f)
+	nonce := make([]byte, gcm.NonceSize())
+	_, err = io.ReadFull(rand.Reader, nonce)
+	if err != nil {
+		return nil, err
+	}
 
-	baseNonce := make([]byte, gcm.NonceSize())
-	_, err = io.ReadFull(rand.Reader, baseNonce)
+	out := encrypt(dek.Bytes(), nonce, gcm)
+	return out, nil
+}
+
+func (s *HorcruxStream) Encrypt() error {
+	f, err := os.Open(s.Filepath)
+	orgFname := filepath.Base(s.Filepath)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+
+	outF, err := os.Create(s.Filepath + ".enc")
+	if err != nil {
+		return err
+	}
+	defer outF.Close()
+
+	// Writing the metadata ----------------------------
+	_, err = outF.Write([]byte(signature))
+	if err != nil {
+		return err
+	}
+	_, err = outF.Write([]byte{byte(version)})
 	if err != nil {
 		return err
 	}
 
-	// Metadata section:
-	// Fixed 21 byte metadata written to start of every encrypted file:
-	// bytes 0-3: Unique signature `HRX1`
-	// byte 4: the version
-	// byte 5-8: Chunksize converted to uint32
-	// 9-20 : The baseNonce
-	//
-	// The variable part:
-	// byte 21-22: the original file name length (N)
-	// byte 23-N: original file name converted to raw bytes
-	r.Write([]byte(signature))
-	r.Write([]byte{byte(1)})
+	originalFilenameLenSlice := binary.BigEndian.AppendUint16(nil, uint16(len(orgFname)))
+	outF.Write(originalFilenameLenSlice)
+	outF.Write([]byte(orgFname))
 
-	chunkSizeSlice := binary.BigEndian.AppendUint32(nil, uint32(chunkSize))
-	r.Write(chunkSizeSlice)
+	encryptedKeysetLenSlice := binary.BigEndian.AppendUint16(nil, uint16(len(s.encryptedKeyset)))
+	outF.Write(encryptedKeysetLenSlice)
+	outF.Write(s.encryptedKeyset)
 
-	fmt.Println("Writing chunksize: ", chunkSize, chunkSizeSlice)
-	r.Write(baseNonce)
+	// ----------------------------
 
-	originalFilenameLenSlice := binary.BigEndian.AppendUint16(nil, uint16(len(baseFilename)))
-	r.Write(originalFilenameLenSlice)
-	fmt.Println("Writing org filename len: ", len(baseFilename), originalFilenameLenSlice)
-	r.Write([]byte(baseFilename))
+	primitive, err := streamingaead.New(s.tinkHandle)
+	if err != nil {
+		return err
+	}
+	tinkWriter, err := primitive.NewEncryptingWriter(outF, nil)
+	if err != nil {
+		return err
+	}
 
-	buff := make([]byte, chunkSize)
+	_, err = io.Copy(tinkWriter, f)
+	if err != nil {
+		return err
+	}
 
-	count := 0
-
-	for {
-		n, err := io.ReadFull(reader, buff)
-		if err == io.EOF {
-			break
-		}
-		if err == io.ErrUnexpectedEOF {
-			nonce := makeCombinedNonce(count, baseNonce, gcm)
-			count++
-			r.Write(encrypt(buff[:n], nonce, gcm))
-			break
-		}
-		if err != nil {
-			return err
-		}
-
-		nonce := makeCombinedNonce(count, baseNonce, gcm)
-		count++
-
-		_, err = r.Write(encrypt(buff[:n], nonce, gcm))
-		if err != nil {
-			return err
-		}
+	if err = tinkWriter.Close(); err != nil {
+		return err
 	}
 
 	return nil
 }
+
 func (s *HorcruxStream) Decrypt() error {
 	f, err := os.Open(s.Filepath + ".enc")
 	if err != nil {
@@ -154,16 +159,7 @@ func (s *HorcruxStream) Decrypt() error {
 	}
 	defer f.Close()
 
-	block, err := aes.NewCipher(s.key)
-	if err != nil {
-		return err
-	}
-	gcm, err := cipher.NewGCM(block)
-	if err != nil {
-		return err
-	}
-
-	// Reading the metadata
+	// Reading the metadata-------------------------------------------------
 	signatureBuff := make([]byte, 4)
 	n, err := io.ReadFull(f, signatureBuff)
 	if err != nil {
@@ -172,7 +168,6 @@ func (s *HorcruxStream) Decrypt() error {
 	if n < 4 || !bytes.Equal(signatureBuff, []byte(signature)) {
 		return errors.New("Invalid signature!\n")
 	}
-	fmt.Println("Read signature", string(signatureBuff))
 
 	versionBuff := make([]byte, 1)
 	n, err = io.ReadFull(f, versionBuff)
@@ -182,96 +177,79 @@ func (s *HorcruxStream) Decrypt() error {
 	if n < 1 || !bytes.Equal(versionBuff, []byte{byte(version)}) {
 		return errors.New("Invalid version!\n")
 	}
-	fmt.Println("Read version", versionBuff)
-
-	chunkSize := make([]byte, 4)
-	n, err = io.ReadFull(f, chunkSize)
-	if err != nil {
-		return err
-	}
-	if n < 4 {
-		return errors.New("Invalid chunk size!\n")
-	}
-	chunkSizeInt := int(binary.BigEndian.Uint32(chunkSize))
-	fmt.Println("Read chunksize: ", chunkSizeInt, chunkSize)
-
-	nonceSize := gcm.NonceSize()
-	targetReadSize := chunkSizeInt + gcm.Overhead()
-	reader := bufio.NewReaderSize(f, targetReadSize)
-
-	buff := make([]byte, targetReadSize)
-
-	baseNonce := make([]byte, nonceSize)
-	_, err = io.ReadFull(reader, baseNonce)
-	if err != nil {
-		return err
-	}
-	fmt.Println("Read baseNonce ")
 
 	originalFilenameLen := make([]byte, 2)
-	n, err = io.ReadFull(reader, originalFilenameLen)
+	n, err = io.ReadFull(f, originalFilenameLen)
 	if err != nil {
 		return err
 	}
 	if n < 2 {
 		return errors.New("Invalid original filename length!\n")
 	}
-
 	originalFilenameLenInt := int(binary.BigEndian.Uint16(originalFilenameLen))
-	fmt.Println("Read org filename length", originalFilenameLenInt)
+
 	originalFilename := make([]byte, originalFilenameLenInt)
-	n, err = io.ReadFull(reader, originalFilename)
+	n, err = io.ReadFull(f, originalFilename)
 	if err != nil {
 		return err
 	}
 	if n < originalFilenameLenInt {
 		return errors.New("Invalid original filename!\n")
 	}
-	fmt.Println(string(originalFilename))
+
+	encryptedKeysetLen := make([]byte, 2)
+	n, err = io.ReadFull(f, encryptedKeysetLen)
+	if err != nil {
+		return err
+	}
+	if n < 2 {
+		return errors.New("Invalid encrypted keyset length!\n")
+	}
+	encryptedKeysetLenInt := int(binary.BigEndian.Uint16(encryptedKeysetLen))
+
+	encryptedKeyset := make([]byte, encryptedKeysetLenInt)
+	n, err = io.ReadFull(f, encryptedKeyset)
+	if err != nil {
+		return err
+	}
+	if n < encryptedKeysetLenInt {
+		return errors.New("Invalid encrypted keyset!\n")
+	}
+	s.encryptedKeyset = encryptedKeyset
+	//  ----------------------------------------------
+
+	decryptedKeyset, err := s.decryptKeyset()
+	if err != nil {
+		return err
+	}
+	bytesReader := bytes.NewReader(decryptedKeyset)
+	keysetReader := keyset.NewJSONReader(bytesReader)
+	kh, err := insecurecleartextkeyset.Read(keysetReader)
+	if err != nil {
+		return err
+	}
+	decryptedKeyset = nil
+
+	primitive, err := streamingaead.New(kh)
+	if err != nil {
+		return err
+	}
+	tinkReader, err := primitive.NewDecryptingReader(f, nil)
+	if err != nil {
+		return err
+	}
 
 	dir := filepath.Dir(s.Filepath)
-	fmt.Println("Writing to: ", filepath.Join(dir, string(originalFilename)))
-	r, err := os.Create(filepath.Join(dir, string(originalFilename)))
+
+	r, err := os.OpenFile(filepath.Join(dir, string(originalFilename)), os.O_RDWR|os.O_CREATE|os.O_EXCL, 0666)
 	if err != nil {
 		return err
 	}
 	defer r.Close()
 
-	count := 0
-
-	for {
-		// fmt.Println("I reached the for loop")
-		n, err := io.ReadFull(reader, buff)
-
-		if err == io.EOF {
-			break
-		}
-		if err == io.ErrUnexpectedEOF {
-			nonce := makeCombinedNonce(count, baseNonce, gcm)
-			count++
-			data, err := decrypt(buff[:n], nonce, gcm)
-			if err != nil {
-				return err
-			}
-			r.Write(data)
-			break
-		}
-		if err != nil {
-			return err
-		}
-
-		nonce := makeCombinedNonce(count, baseNonce, gcm)
-		count++
-
-		data, err := decrypt(buff[:n], nonce, gcm)
-		if err != nil {
-			return err
-		}
-
-		_, err = r.Write(data)
-		if err != nil {
-			return err
-		}
+	_, err = io.Copy(r, tinkReader)
+	if err != nil {
+		return err
 	}
 	return nil
 }
@@ -283,26 +261,35 @@ func NewHorcruxStream(filepath string) *HorcruxStream {
 	return s
 }
 
-func makeCombinedNonce(count int, baseNonce []byte, gcm cipher.AEAD) []byte {
-	countArray := make([]byte, 8)
-	nonce := make([]byte, gcm.NonceSize())
-	copy(nonce, baseNonce)
-	binary.BigEndian.PutUint64(countArray, uint64(count))
-	last8 := nonce[len(nonce)-8:]
-	for i := range 8 {
-		last8[i] ^= countArray[i]
-	}
-	return nonce
-}
-
 func encrypt(data, nonce []byte, gcm cipher.AEAD) []byte {
-	return gcm.Seal(nil, nonce, data, nil)
+	return gcm.Seal(nonce, nonce, data, nil)
 }
 
-func decrypt(data, nonce []byte, gcm cipher.AEAD) ([]byte, error) {
-	out, err := gcm.Open(nil, nonce, data, nil)
+func decrypt(data []byte, gcm cipher.AEAD) ([]byte, error) {
+	nonceSize := gcm.NonceSize()
+	nonce, cipherText := data[:nonceSize], data[nonceSize:]
+	out, err := gcm.Open(nil, nonce, cipherText, nil)
 	if err != nil {
 		return nil, err
 	}
 	return out, nil
+}
+
+func (s *HorcruxStream) decryptKeyset() ([]byte, error) {
+	block, err := aes.NewCipher(s.key)
+	if err != nil {
+		return nil, err
+	}
+
+	gcm, err := cipher.NewGCM(block)
+	if err != nil {
+		return nil, err
+	}
+
+	plainText, err := decrypt(s.encryptedKeyset, gcm)
+	if err != nil {
+		return nil, err
+	}
+
+	return plainText, nil
 }

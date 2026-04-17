@@ -1,6 +1,7 @@
 package envelope_test
 
 import (
+	"crypto/rand"
 	"horcrux/pkg/envelope"
 	"os"
 	"path/filepath"
@@ -19,9 +20,16 @@ func TestEncryptDecryptLifecycle(t *testing.T) {
 	}
 
 	s := envelope.NewHorcruxStream(fileDir)
+	kek, err := generateKEK()
+	if err != nil {
+		return
+	}
+	s.SetKey(kek)
+
 	s.InitializeKey()
 
-	require.NoError(t, s.Encrypt(4096))
+	var cipherStream envelope.CipherStream = s
+	require.NoError(t, cipherStream.Encrypt())
 
 	if !assert.NoError(t, os.Remove(fileDir)) {
 		return
@@ -35,4 +43,13 @@ func TestEncryptDecryptLifecycle(t *testing.T) {
 	require.NoError(t, err)
 
 	require.Equal(t, []byte("This is some very secret data"), data)
+}
+
+func generateKEK() ([]byte, error) {
+	kek := make([]byte, 32)
+	_, err := rand.Read(kek)
+	if err != nil {
+		return nil, err
+	}
+	return kek, nil
 }

@@ -98,7 +98,7 @@ func readShardFiles(shards []string) ([]DecodedShard, error) {
 	for _, s := range shards {
 		f, err := os.Open(s)
 		if err != nil {
-			return nil, fmt.Errorf("Error occoured while opening shard file: %v", err)
+			return nil, fmt.Errorf("Error while opening shard file: %v", err)
 		}
 		var shard Shard
 

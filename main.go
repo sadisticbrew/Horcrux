@@ -1,6 +1,8 @@
 package main
 
-import "horcrux/cmd"
+import (
+	"horcrux/cmd"
+)
 
 func main() {
 	cmd.Execute()
