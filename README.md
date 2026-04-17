@@ -1,35 +1,51 @@
 # Horcrux
 
-A cryptographic file encryption and secret sharing engine written in Go.
+A cryptographic file encryption and secret sharing CLI written in Go.
 
-Horcrux secures your files using AES-256-GCM envelope encryption, and then uses Shamir's Secret Sharing (SSS) to split the master encryption key into multiple distinct shards. You specify a "threshold"—the minimum number of shards required to rebuild the key and decrypt the file. If an attacker gets fewer shards than the threshold, they learn absolutely nothing about your key or your data.
+Horcrux secures your files using enterprise-grade Envelope Encryption. It encrypts your target file using Google Tink (Streaming AEAD), and then uses Shamir's Secret Sharing (SSS) to shatter the master encryption key into distinct mathematical shards. 
 
-## Current State
-The core backend engine is fully functional and production-ready. It features a memory-safe chunking protocol capable of encrypting and decrypting massive files (like gigabyte-sized backups) without consuming excessive RAM. The SSS math engine and the encryption tools are cleanly separated into reusable Go packages.
+You specify a "threshold", the minimum number of shards required to rebuild the key and decrypt the file. If an attacker compromises your machine but gets fewer shards than your threshold, they learn absolutely nothing about your data.
 
-**Current Features:**
-* Custom Shamir's Secret Sharing implementation built from scratch.
-* Secure envelope encryption using AES-256-GCM.
-* Memory-efficient file streaming (chunking protocol) for large files.
-* Modular Go package architecture (`pkg/shamir` and `pkg/crypto`).
+## Architecture & Design
+The core engine is built for memory safety and zero-knowledge storage. It is capable of encrypting massive files (like gigabyte-sized database backups) without consuming excessive RAM.
 
-**Planned Features:**
-* [ ] Full Command Line Interface (CLI) using the Cobra framework.
-* [ ] OS Keyring integration for secure, persistent local key storage.
+* **Data Encryption Key (DEK):** Managed by **Google Tink**. Handles the heavy lifting of streaming large files securely to disk using AES-256-GCM-HKDF.
+* **Key Encryption Key (KEK):** A randomly generated 32-byte key used to lock the DEK vault. This KEK is the secret that is mathematically shattered by the Shamir engine.
+* **Custom File Format (`HRX2`):** Implements a custom binary metadata header to safely store the locked Tink keyset, verify file integrity, and flawlessly restore the original file extension upon decryption.
+* **Failsafes:** Built-in OS-level protections prevent accidental data overwrites during the decryption phase, ensuring user data is never silently destroyed.
 
-## How to Run
+## Getting Started
 
-Right now, the project contains a demonstration of the full encryption, sharding, and decryption lifecycle in `main.go`. 
-
-1. Ensure you have Go installed.
-2. Clone the repository:
+### Installation
+1. Clone the repository:
    ```bash
-   git clone [https://github.com/prathampatel/horcrux.git](https://github.com/prathampatel/horcrux.git)
+   git clone https://github.com/prathampatel/horcrux.git
    cd horcrux
-    ```
-3. Set your filepath in cmd/horcrux/main.go file
-4. Run the engine:
+   ```
+2. Build the executable binary:
    ```bash
-   go run cmd/horcrux/main.go
-    ```
-5. The program will generate a secure key, encrypt a target file, shatter the key into your specified number of shards, and then demonstrate successfully rebuilding the key to decrypt the file.
+   go build -o horcrux main.go
+   ```
+
+### Usage
+
+**1. Encrypting a file**
+Use the `encrypt` command. You can specify the total number of shards to generate (`-s`) and the threshold needed to unlock (`-t`).
+
+```bash
+./horcrux encrypt my_secret_data.zip -s 5 -t 3
+```
+*This generates `my_secret_data.zip.enc` and 5 individual JSON `.shard` files. **Warning:** Move these shards to separate physical or digital locations (USB drives, password managers) and delete the local copies!*
+
+**2. Decrypting a file**
+To unlock the file, use the `decrypt` command and provide the paths to at least the threshold number of shards.
+
+```bash
+./horcrux decrypt my_secret_data.zip.enc -s my_secret_data.zip.shard1,my_secret_data.zip.shard3,my_secret_data.zip.shard5
+```
+*The engine will integrate the mathematical weights, rebuild the master key, unlock the Tink keyset, and perfectly restore your original `my_secret_data.zip` file.*
+
+## Dependencies
+* [Cobra](https://github.com/spf13/cobra) - CLI framework orchestration
+* [Google Tink](https://github.com/tink-crypto/tink-go) - Enterprise cryptography engine
+* [Testify](https://github.com/stretchr/testify) - Automated test assertions
