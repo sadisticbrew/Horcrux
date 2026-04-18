@@ -1,3 +1,4 @@
+
 # Horcrux
 
 A cryptographic file encryption and secret sharing CLI written in Go.
@@ -7,6 +8,56 @@ Horcrux secures your files using enterprise-grade Envelope Encryption. It encryp
 You specify a "threshold", the minimum number of shards required to rebuild the key and decrypt the file. If an attacker compromises your machine but gets fewer shards than your threshold, they learn absolutely nothing about your data.
 
 ## Architecture & Design
+
+Encryption flowchart
+```mermaid
+graph TD
+    %% Styling
+    classDef file fill:#2d3748,stroke:#4a5568,stroke-width:2px,color:#fff;
+    classDef engine fill:#2b6cb0,stroke:#2c5282,stroke-width:2px,color:#fff;
+    classDef key fill:#b83280,stroke:#97266d,stroke-width:2px,color:#fff;
+    classDef shard fill:#c05621,stroke:#9c4221,stroke-width:2px,color:#fff;
+
+    %% Nodes
+    A[Original File <br>e.g., backup.zip]:::file
+    
+    KEK[32-byte Master Key <br>KEK]:::key
+    SSS[Shamir's SSS Engine]:::engine
+    Shards[N x Shard Files]:::shard
+    
+    DEK[Google Tink Keyset <br>DEK]:::key
+    CustomAES[Custom AES-GCM <br>Vault Door]:::engine
+    LockedDEK[Locked Tink Keyset]:::key
+    
+    TinkStream[Tink Streaming AEAD <br>Heavy Machinery]:::engine
+    EncryptedData[Encrypted File Chunks]:::file
+    
+    subgraph Final Output: target.enc
+        Header[HRX2 Header Metadata]:::file
+        StoredDEK[Stored Locked Keyset]:::file
+        StoredData[Stored Encrypted Data]:::file
+    end
+
+    %% Key Shattering Flow
+    KEK -->|Shattered by| SSS
+    SSS -->|Generates| Shards
+    
+    %% Envelope Locking Flow
+    KEK -->|Locks| CustomAES
+    DEK -->|Exported as JSON| CustomAES
+    CustomAES -->|Outputs| LockedDEK
+    
+    %% File Streaming Flow
+    DEK -->|Primes Cipher| TinkStream
+    A -->|Streams 1MB Chunks| TinkStream
+    TinkStream -->|Outputs| EncryptedData
+    
+    %% Assembly Flow
+    LockedDEK -.->|Written to Header| StoredDEK
+    EncryptedData -.->|Appended| StoredData
+
+```
+
 The core engine is built for memory safety and zero-knowledge storage. It is capable of encrypting massive files (like gigabyte-sized database backups) without consuming excessive RAM.
 
 * **Data Encryption Key (DEK):** Managed by **Google Tink**. Handles the heavy lifting of streaming large files securely to disk using AES-256-GCM-HKDF.
